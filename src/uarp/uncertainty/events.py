@@ -33,12 +33,18 @@ class Event:
     distance: float = 0.0  # only used by new_node_join
 
     def apply(self, topo: Topology) -> Topology:
-        """Return a *new* Topology with the event applied (no aliasing)."""
+        """Return a *new* Topology with the event applied (no aliasing).
+
+        service_failure is modelled as severe performance degradation
+        (capacity * 0.05) rather than full unavailability so that the
+        Benchmark method's "exceed the deadline" semantics from paper §4.1(1)
+        emerge naturally instead of producing infinite completion times.
+        """
         new_topo = copy.deepcopy(topo)
         if self.kind == "performance_degradation":
             new_topo.nodes[self.node_idx].capacity *= self.factor
         elif self.kind == "service_failure":
-            new_topo.nodes[self.node_idx].available = False
+            new_topo.nodes[self.node_idx].capacity *= 0.05
         elif self.kind == "new_node_join":
             new_topo.nodes.append(
                 EdgeNode(idx=self.node_idx, capacity=self.capacity, ce=self.ce)

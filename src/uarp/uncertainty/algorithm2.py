@@ -53,21 +53,20 @@ def _split_progress(workflow: Workflow, progress_frac: float) -> tuple[list[int]
 def _per_task_deadlines(
     workflow: Workflow,
     topology: Topology,
-    initial_schedule: Schedule,
+    reference_schedule: Schedule,
     alpha: float,
     affected_ids: list[int],
 ) -> np.ndarray:
-    """Per-task deadlines for affected tasks.
+    """Per-task deadlines for affected tasks (Eqs. 13-14).
 
-    Paper Eq. 14 interpolates DT(v_i) along the critical path from the global
-    DT(V_m) = α · WT_ideal. We follow the natural interpretation: each task's
-    deadline scales with α relative to its planned completion under the initial
-    strategy on the original topology.
+    The reference schedule should be the *ideal* (uncertainty-free) plan and is
+    shared across all comparison methods so they are evaluated against the
+    same DT — matching paper §2.2.4 where α scales the ideal completion time.
     """
     from uarp.model.cost import schedule_times
 
-    _, WT_initial = schedule_times(workflow, topology, initial_schedule)
-    return alpha * WT_initial[affected_ids]
+    _, WT_ideal = schedule_times(workflow, topology, reference_schedule)
+    return alpha * WT_ideal[affected_ids]
 
 
 def reschedule(
@@ -79,6 +78,7 @@ def reschedule(
     *,
     alpha: float = 1.2,
     progress_frac: float = 0.4,
+    deadline_reference: Schedule | None = None,
 ) -> RescheduleResult:
     """Run Algorithm 2's flow with a pluggable sub-scheduler for the remainder.
 
@@ -111,8 +111,9 @@ def reschedule(
             for i in remaining_ids
         ]
     )
+    ref = deadline_reference if deadline_reference is not None else initial_schedule
     affected_deadlines = _per_task_deadlines(
-        workflow, topology, initial_schedule, alpha, remaining_ids
+        workflow, topology, ref, alpha, remaining_ids
     )
     return RescheduleResult(
         final_schedule=final_schedule,
@@ -176,23 +177,39 @@ def reschedule_benchmark(
     *,
     alpha: float = 1.2,
     progress_frac: float = 0.4,
+    deadline_reference: Schedule | None = None,
 ) -> RescheduleResult:
-    """Benchmark — keep initial_schedule unchanged, just measure post-event cost."""
+    """Benchmark — keep initial_schedule unchanged, just measure post-event cost.
+
+    If a service_failure event renders a task's assigned node unavailable, the
+    task is transparently redirected to the first available node. This is the
+    minimum repair needed to keep the workflow executable; Benchmark still
+    does NOT optimise the assignment of remaining tasks.
+    """
     _, remaining_ids = _split_progress(workflow, progress_frac)
     new_topo = apply_events(topology, events)
-    actual_wt = completion_time(workflow, new_topo, initial_schedule)
-    actual_cm = total_energy(workflow, new_topo, initial_schedule)
+    repaired = initial_schedule.assignment.copy()
+    available = [k for k in range(new_topo.N) if new_topo.node(k).available]
+    if available:
+        fallback = available[0]
+        for i in range(workflow.M):
+            if not new_topo.node(repaired[i]).available:
+                repaired[i] = fallback
+    repaired_sched = Schedule(assignment=repaired)
+    actual_wt = completion_time(workflow, new_topo, repaired_sched)
+    actual_cm = total_energy(workflow, new_topo, repaired_sched)
     affected_finishes = np.array(
         [
-            _task_finish_time(workflow, new_topo, initial_schedule, i)
+            _task_finish_time(workflow, new_topo, repaired_sched, i)
             for i in remaining_ids
         ]
     )
+    ref = deadline_reference if deadline_reference is not None else initial_schedule
     affected_deadlines = _per_task_deadlines(
-        workflow, topology, initial_schedule, alpha, remaining_ids
+        workflow, topology, ref, alpha, remaining_ids
     )
     return RescheduleResult(
-        final_schedule=initial_schedule,
+        final_schedule=repaired_sched,
         final_topology=new_topo,
         actual_wt=actual_wt,
         actual_cm=actual_cm,

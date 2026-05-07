@@ -64,3 +64,42 @@ def make_homogeneous_topology(
         h=h,
         cs=cs,
     )
+
+
+def make_heterogeneous_topology(
+    N: int = 20,
+    capacity_range: tuple[float, float] = (1500.0, 2500.0),
+    ce_range: tuple[float, float] = (0.04, 0.07),
+    BA: float = 1000.0,
+    distance_range: tuple[float, float] = (10.0, 100.0),
+    ct_per_distance: float = 1e-5,
+    n_controllers: int = 2,
+    cs_value: float = 1e-3,
+    seed: int | None = None,
+) -> Topology:
+    """Heterogeneous nodes — induces a real WT vs CM trade-off.
+
+    The paper does not detail per-node parameter variance. We make capacity,
+    execution-energy coefficient, and distance all vary across nodes so that
+    "fast" and "energy-efficient" nodes are different — which is necessary
+    for NSGA-III to find a non-trivial Pareto front.
+    """
+    rng = np.random.default_rng(seed)
+    capacities = rng.uniform(capacity_range[0], capacity_range[1], size=N)
+    ces = rng.uniform(ce_range[0], ce_range[1], size=N)
+    nodes = [
+        EdgeNode(idx=k, capacity=float(capacities[k]), ce=float(ces[k]))
+        for k in range(N)
+    ]
+    distances = rng.uniform(distance_range[0], distance_range[1], size=N)
+    h = np.ones((n_controllers, n_controllers), dtype=int) - np.eye(n_controllers, dtype=int)
+    cs = np.full((n_controllers, n_controllers), cs_value)
+    np.fill_diagonal(cs, 0.0)
+    return Topology(
+        nodes=nodes,
+        BA=BA,
+        distances=distances,
+        ct_per_distance=ct_per_distance,
+        h=h,
+        cs=cs,
+    )

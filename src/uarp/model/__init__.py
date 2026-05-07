@@ -14,7 +14,12 @@ from .cost import (
     transmission_energy,
     transmission_time,
 )
-from .edge import EdgeNode, Topology, make_homogeneous_topology
+from .edge import (
+    EdgeNode,
+    Topology,
+    make_heterogeneous_topology,
+    make_homogeneous_topology,
+)
 from .schedule import Schedule
 from .workflow import Task, Workflow, random_dag, subset
 
@@ -28,6 +33,7 @@ __all__ = [
     "deadline",
     "execution_energy",
     "execution_time",
+    "make_heterogeneous_topology",
     "make_homogeneous_topology",
     "random_dag",
     "schedule_times",
