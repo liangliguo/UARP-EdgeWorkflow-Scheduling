@@ -36,6 +36,24 @@ class Workflow:
         return self.tasks[i].size
 
 
+def subset(workflow: "Workflow", task_ids: list[int]) -> tuple["Workflow", list[int]]:
+    """Return a workflow induced by the given task ids, plus the global->local map.
+
+    Used by Algorithm 2 to reschedule only the un-finished tasks.
+    The returned workflow uses local indices 0..len(task_ids)-1 in topo order.
+    """
+    keep = set(task_ids)
+    ordered = [i for i in workflow.topo_order() if i in keep]
+    global_to_local = {g: l for l, g in enumerate(ordered)}
+    new_g = nx.DiGraph()
+    new_g.add_nodes_from(range(len(ordered)))
+    for u, v in workflow.graph.edges():
+        if u in keep and v in keep:
+            new_g.add_edge(global_to_local[u], global_to_local[v])
+    new_tasks = [Task(idx=l, size=workflow.tasks[g].size) for l, g in enumerate(ordered)]
+    return Workflow(tasks=new_tasks, graph=new_g), ordered
+
+
 def random_dag(
     n_tasks: int,
     edge_prob: float = 0.3,

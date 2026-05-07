@@ -16,7 +16,7 @@ from .cost import (
 )
 from .edge import EdgeNode, Topology, make_homogeneous_topology
 from .schedule import Schedule
-from .workflow import Task, Workflow, random_dag
+from .workflow import Task, Workflow, random_dag, subset
 
 __all__ = [
     "EdgeNode",
@@ -31,6 +31,7 @@ __all__ = [
     "make_homogeneous_topology",
     "random_dag",
     "schedule_times",
+    "subset",
     "success_indicator",
     "success_rate",
     "sync_energy",
