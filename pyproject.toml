@@ -1,0 +1,38 @@
+[project]
+name = "uarp"
+version = "0.1.0"
+description = "Reproduction of Xu et al. 2020 (CCPE e5674) — UARP: dynamic resource provisioning for workflow scheduling under uncertainty in edge computing"
+requires-python = ">=3.11"
+dependencies = [
+    "matplotlib>=3.10.9",
+    "networkx>=3.6.1",
+    "numpy>=2.4.4",
+    "pandas>=3.0.2",
+    "pymoo>=0.6.1.6",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/uarp"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[[tool.uv.index]]
+url = "https://mirrors.cernet.edu.cn/pypi/web/simple/"
+default = true
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.15.12",
+]
