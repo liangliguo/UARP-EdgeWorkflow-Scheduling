@@ -66,9 +66,11 @@ def plot(df: pd.DataFrame, out_path: Path) -> None:
 def main() -> None:
     out_dir = Path(__file__).resolve().parent / "results"
     out_dir.mkdir(exist_ok=True)
+    figs_dir = Path(__file__).resolve().parent.parent / "figs"
+    figs_dir.mkdir(exist_ok=True)
     df = run()
     df.to_csv(out_dir / "figure5_utility.csv", index=False)
-    plot(df, Path(__file__).resolve().parent.parent / "figs" / "figure5_utility.png")
+    plot(df, figs_dir / "figure5_utility.png")
     print(df.to_string(index=False))
 
 

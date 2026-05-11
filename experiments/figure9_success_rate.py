@@ -140,6 +140,7 @@ def main() -> None:
     out_dir = Path(__file__).resolve().parent / "results"
     out_dir.mkdir(exist_ok=True)
     figs_dir = Path(__file__).resolve().parent.parent / "figs"
+    figs_dir.mkdir(exist_ok=True)
     df = run()
     df.to_csv(out_dir / "figure9_success_rate.csv", index=False)
     plot(df, figs_dir / "figure9_success_rate.png")
