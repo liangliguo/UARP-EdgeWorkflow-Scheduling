@@ -24,6 +24,10 @@ uv run ruff check src tests experiments      # lint
 
 The package is installed in editable mode via `[tool.hatch.build]` pointing at `src/uarp`. Tests rely on `pythonpath = ["src"]` in `pyproject.toml` — run them with `uv run pytest`, not bare `pytest`.
 
+## Git workflow
+
+After modifying project code functionality, run the relevant tests. If the tests pass, automatically commit the completed changes and push them to the configured remote. Keep commits focused: do not include unrelated local changes or generated artifacts unless they are part of the requested task.
+
 ## Architecture
 
 The pipeline mirrors the paper's section structure. Each layer is a separate package under `src/uarp/`; cross-layer code goes through the public APIs in each `__init__.py`.
