@@ -1,106 +1,34 @@
 # UARP 复现的改进规划
 
-本文件记录在 `improvements` 分支上计划补强的内容,起因是原论文(Xu et al. 2020, CCPE e5674)的算法/模型在真实移动边缘场景下存在若干局限。每条改动均给出**问题来源、解决思路、代码改动点、验证方式、工作量**,按落地优先级排序。
+本文件记录在 `improvements` 分支上计划补强的内容,起因是原论文(Xu et al. 2020, CCPE e5674)的算法/模型在真实移动边缘场景下存在若干局限。本轮聚焦两大方向——**不确定性建模过于简化**(对"移动"场景最致命)与**确定性成本模型 vs 随机现实**。每条改动均给出问题来源、解决思路、代码改动点、验证方式、工作量。
 
 > 与 `TODO.md` 的区别:`TODO.md` 是论文原始复现的阶段计划;本文是**超出论文范围**的扩展与修正。
 
 ---
 
-## 问题分类总览
+## 总体问题与解决方案
 
-| 编号 | 问题 | 类别 | 优先级 |
-|---|---|---|---|
-| #1 | 节点忙等约束缺失(同节点任务可并行) | 模型 bug | P1 |
-| #2 | NSGA-III 用于 2 目标 | 算法选型 | P1 |
-| #3 | SAW MCDM 假设线性偏好 | 决策 | P1 |
-| #4 | 设备移动性未建模 | 模型 | P2 |
-| #5 | 事件序列退化为单次扰动 | 模型 | P2 |
-| #6 | 事件类型缺失(带宽抖动 / 队列拥塞 / 任务体积漂移) | 模型 | P2 |
-| #7 | 确定性成本 vs 随机现实 | 算法 | P3 |
-| #8 | α-deadline 是粗粒度 buffer | 算法 | P3 |
-| #9 | Eq. 14 任务级 deadline 公式 ill-posed | 论文公式硬伤 | P3 |
-| #10 | 仅做一次重调度,无 rolling horizon | 算法 | P4 |
-| #11 | 数据再传输代价未计 | 模型 | P4 |
-| #12 | 服务失效靠 `capacity*=0.05` 近似 | 工程妥协 | P4 |
-| #13 | 单链路共享带宽,无每链路差异 | 模型 | P4 |
-| #14 | 能耗模型缺 idle / 设备侧 / SNR 项 | 模型 | P5 |
-| #15 | 单工作流假设,无跨工作流调度 | 范围 | P5 |
-| #16 | 纯 reactive,无失效预测 | 算法 | P5 |
+**问题类型**字段说明:
+
+- **建模简化** — 物理/系统层面的过度理想化(节点、链路、能耗、数据迁移)
+- **不确定性薄弱** — 对随机事件、风险尾部的处理过于粗糙或缺失
+- **论文/实现缺陷** — 论文公式硬伤或复现时为绕开问题做的工程妥协
+
+| 编号 | 问题类型 | 问题描述 | 解决方案(一句话) | 类别 | 优先级 | 改动位置 |
+|---|---|---|---|---|---|---|
+| 一.1 | 建模简化 | 没有移动性建模。`Topology.distances[k]` 是每节点一个常量(`edge.py:30`),设备—节点的距离从头到尾不变。真实移动场景下距离连续变化(OT、ct 都该是时间的函数),跨基站会发生 handover / service migration(状态搬运、缓存重建有迁移成本);且论文只考虑节点侧三种事件,没有用户侧的任何事件——而 mobile edge 的主要 uncertainty 恰恰来自用户侧。 | 引入 `MobilityTrace`(`linear_walk` + `random_waypoint` 两种生成器);`transmission_time()` 接受 `t_start`;增加 handover 触发与迁移代价。 | 模型 | P1 | `uncertainty/mobility.py`(新) / `model/cost.py` / `model/edge.py` |
+| 一.2 | 不确定性薄弱 | 每次仅注入一个事件,且时刻固定。`generate_events` 默认 `n_events=1`,`reschedule()` 在 `progress_frac=0.4` 处一次性触发(`algorithm2.py:88`)。现实里事件是连续到达的点过程(Poisson / 突发),论文相当于把一个 stochastic process 退化成一次性扰动。 | 用 NHPP(非齐次泊松)采样事件时间戳;`Event` 增加 `time` 字段;`reschedule()` 改为按时间顺序逐事件触发。 | 模型 | P1 | `uncertainty/events.py` / `uncertainty/algorithm2.py` |
+| 一.3 | 不确定性薄弱 | 事件类型缺失。链路带宽 BA 抖动、节点队列拥塞、邻居工作流抢占、电池耗尽、无线 PHY 速率下降、任务体积/计算量本身的不确定(`Workflow.size(i)` 也是常量)——都未建模。 | 增加 `bandwidth_jitter`、`queue_contention`、`task_size_drift` 三类事件,支持 `duration` 与到期自动回滚;`Workflow.size` 改为可附带噪声。 | 模型 | P2 | `uncertainty/events.py` / `model/workflow.py` |
+| 一.4 | 论文/实现缺陷 | `service_failure` 的工程妥协。README 第 46–50 行直接承认:若真把节点设成 `available=False`,Benchmark 一旦命中失效节点就 inf,无法对比,所以把失效改写成 `capacity *= 0.05`(`events.py:47`)。这暴露 UARP 框架本身无法处理硬失效——既然算法叫"动态资源供给",对硬不可用就该有迁移/恢复策略,而不是降级近似。 | 恢复 `available=False` 真失效语义;Benchmark 改为报告"违反 deadline 任务比例"而非 WT;`reschedule()` 增加"已完成任务的中间结果迁移"分支,即明确的恢复策略。 | 工程妥协 | P2 | `uncertainty/events.py` / `uncertainty/algorithm2.py` |
+| 二.5 | 不确定性薄弱 | 所有代价(OT/ET/CMT/CME)都是点估计。论文不是 robust / stochastic optimization,而是"先用确定模型求 NSGA-III,事件触发后再求一次"——这是 reactive,不是题目暗示的 *provisioning*。真正的供给应在第一次调度时就对不确定性建模并加入约束(例如 chance-constrained 或 CVaR)。 | scenario-based 鲁棒评估:每次 `_evaluate` 在 S 个扰动 topology 上算 WT/CM,以 CVaR₀.₉ 作为目标。 | 算法 | P3 | `scheduler/problem.py` |
+| 二.6 | 不确定性薄弱 | α-deadline(Eq. 13)是个粗粒度 buffer。`DT = α · WT_ideal`,α 取 1.1–1.4(Figure 9 横轴),完全不区分任务的尾部风险。两个完成时间相同的方案,若一个方差大、一个小,这里给同样的 buffer——这违反 mobile 场景的直觉。 | 用 `quantile_0.9(WT_scenarios)` 取代 α-deadline;Figure 9 横轴换成风险分位数。 | 算法 | P3 | `model/cost.py` / `experiments/figure9_*.py` |
+| 二.7 | 论文/实现缺陷 | Eq. 14 任务级 deadline 本身写错了。`cost.py:111-124` 的注释和公式都点出:论文写的 `(WT(v_q)-ST(v_p))·(WT(v_i)-ST(v_p)) / (WT(v_i)-ST(v_p))` 分子分母自相消,是 ill-posed 的;复现只能猜一个"沿关键路径线性分配 slack"的解释。这是论文形式化层面的硬伤。 | 改用经典 Slack-Time Allocation(Hwang et al. 1989):`DT[i] = WT_ideal[i] + slack · (path_len_through_i / total_path_len)`。 | 论文公式硬伤 | P1 | `model/cost.py:103-124` |
 
 ---
 
-## P1:调度模型修正 + 决策改进(半天内可完成)
+## 一、不确定性建模过于简化(对"移动"场景最致命)
 
-### #1 节点忙等约束
-
-**问题**。`src/uarp/model/cost.py:30` 的 `schedule_times()` 只考虑 DAG 前驱完成 + 数据传输完成,**没有"同一节点上两个任务必须串行"的约束**。等价于把每个 edge node 视为无限并行,会系统性低估 WT,且让"全部压到最快节点"的策略不公平地占便宜。
-
-**方案**。改为 list-scheduling,维护每节点的下一次空闲时刻:
-
-```python
-def schedule_times(wf, topo, sched):
-    node_free = np.zeros(topo.N)
-    ST = np.zeros(wf.M); WT = np.zeros(wf.M)
-    for i in wf.topo_order():
-        k = sched.node_of(i)
-        ot_i = transmission_time(wf, topo, sched, i)
-        et_i = execution_time(wf, topo, sched, i)
-        pred_ready = max((WT[p] for p in wf.predecessors(i)), default=0.0)
-        ST[i] = max(pred_ready, node_free[k]) + ot_i
-        WT[i] = ST[i] + et_i
-        node_free[k] = WT[i]
-    return ST, WT
-```
-
-**代码改动**:
-- `src/uarp/model/cost.py:30-54`
-- 受影响测试:`tests/test_model.py::test_serial_schedule_times`, `test_parallel_schedule_times`(需更新预期值)
-
-**新增测试**:同节点 + 无依赖的 2 任务,断言两任务串行而非并行完成。
-
-**预期影响**。Figure 6/7/8 的绝对数值变化,但相对排序(UARP < FF < WF < Benchmark)应保留。需重跑 `experiments/run_all.py` 并更新 README"复现趋势"段落。
-
----
-
-### #2 NSGA-II 替换 NSGA-III(2 目标场景)
-
-**问题**。NSGA-III 的 reference direction 机制是为 ≥3 目标设计的;2 目标场景下 NSGA-II 在收敛速度和 Pareto front 多样性上都更优。
-
-**方案**。
-
-```python
-# src/uarp/scheduler/uarp.py
-from pymoo.algorithms.moo.nsga2 import NSGA2
-algo = NSGA2(pop_size=pop_size, sampling=..., crossover=..., mutation=...)
-```
-
-**约束**。引入 #14(device energy 第 3 目标)后切回 NSGA-III。
-
-**验证**。`tests/test_scheduler.py` 确认 Pareto front 大小 ≥ 2(异构拓扑上)。
-
----
-
-### #3 Knee-point 替换 SAW
-
-**问题**。`src/uarp/scheduler/saw_mcdm.py` 用线性加权,对非凸 Pareto front 容易选端点而漏掉 knee;权重又需要外部指定,缺乏依据。
-
-**方案**。增加 knee-point selector(到归一化 ideal point 的最近 L2 距离):
-
-```python
-def knee_point(F: np.ndarray) -> int:
-    F_n = (F - F.min(0)) / (F.ptp(0) + 1e-9)
-    return int(np.argmin(np.linalg.norm(F_n, axis=1)))
-```
-
-`solve()` 暴露 `selector="saw" | "knee" | "topsis"`,默认 `"knee"`;旧调用方保留兼容。
-
----
-
-## P2:移动性 + 不确定性扩展(1-2 天)
-
-### #4 时变距离(MobilityModel)
-
-**问题**。`Topology.distances[k]` 是常量,但移动 MEC 场景下距离随时间变化,直接影响 OT(Eq. 4)和 CMT(Eq. 9)。
+### 一.1 时变距离与 handover(MobilityModel)
 
 **方案**。
 
@@ -112,43 +40,69 @@ def knee_point(F: np.ndarray) -> int:
       distances: np.ndarray        # (T, N)
       def distance_at(self, t: float, k: int) -> float: ...
   ```
-- 提供两种生成器:`linear_walk`(沿直线匀速)、`random_waypoint`(RWP 模型,经典 mobility model)。
-- `Topology` 增加可选字段 `mobility: MobilityTrace | None`;若为 `None`,退化为常量距离。
-- `cost.transmission_time(wf, topo, sched, i, t_start)` 增加 `t_start` 形参;`schedule_times()` 内部传入。
+- 提供两种生成器:`linear_walk`(沿直线匀速)、`random_waypoint`(经典 RWP 模型)。
+- `Topology` 增加可选字段 `mobility: MobilityTrace | None`;为 `None` 时退化为常量距离,保持旧测试兼容。
+- `cost.transmission_time(wf, topo, sched, i, t_start)` 增加 `t_start` 形参;`schedule_times()` 内部按任务起始时刻传入。
+- handover:当设备所在小区切换时,若当前任务仍在执行,触发一次"状态搬运 + 缓存重建"代价(参考 #11 的 `output_location` 思路,计入额外 OT)。
 
-**新建测试** `tests/test_mobility.py`:两节点 + 直线运动,断言 OT(t=0) < OT(t=终点) 当设备远离节点时。
+**新建测试** `tests/test_mobility.py`:两节点 + 直线运动,断言设备远离节点时 OT 单调增。
+
+**预期影响**。Figure 6/7/8 在加入 mobility 后,UARP 与 FF/WF 的差距会拉大(UARP 知道距离会变,FF 不会)。
 
 ---
 
-### #5 + #6 NHPP 事件序列 + 新事件类型
-
-**问题**。`generate_events(n_events=1)` 把一个 stochastic process 退化成单次扰动;且只覆盖 3 种节点侧事件。
+### 一.2 NHPP 事件点过程
 
 **方案**。
 
-- 改造 `generate_events()`:接受 `rate_fn: Callable[[float], float]` 和 `T_horizon`,按 NHPP(非齐次泊松)采样事件时间戳;旧的 `n_events` 接口保留为捷径。
-- `Event` 加 `time: float` 字段,按时间排序后再 apply。
-- 新增事件类型:
-  - `bandwidth_jitter`: `BA *= factor`,持续 `duration`,过期自动回滚(用 `expiry: float`)
-  - `queue_contention`: `capacity *= factor`,带 `duration`(代表邻居工作流抢占)
-  - `task_size_drift`: 给 `Workflow.sizes` 注入乘性噪声(执行前才显现)
-
-**代码改动**:`src/uarp/uncertainty/events.py`,`Event.apply` 改为支持带时序的 apply/revert。
+- 改造 `generate_events()`:
+  ```python
+  def generate_events(topo, rate_fn: Callable[[float], float], T_horizon: float, *, seed=0):
+      """NHPP sampling — thinning algorithm."""
+      ...
+  ```
+  旧 `n_events=N` 接口保留为捷径(等价于均匀 rate)。
+- `Event` 加 `time: float`;事件按 `time` 排序后顺序 apply。
+- `reschedule()` 改为遍历事件列表:每个事件 fire 时调用一次 `replan(now, state)`(详见 #10 但本轮不展开)。
 
 ---
 
-## P3:鲁棒优化与正确的 deadline 公式(2-3 天)
+### 一.3 新事件类型
 
-### #7 + #8 Scenario-based CVaR 第一阶段
+**新增事件**:
 
-**问题**。论文 NSGA-III 只在确定性 topology 上优化,把"应对不确定性"留给事后 reschedule——这是 reactive,不是题目暗示的 *provisioning*。
+| 类型 | 语义 | 关键字段 |
+|---|---|---|
+| `bandwidth_jitter` | 链路带宽乘性扰动 | `factor`, `duration` |
+| `queue_contention` | 节点 capacity 临时缩放(代表邻居工作流抢占) | `factor`, `duration` |
+| `task_size_drift` | `Workflow.sizes` 乘性噪声(执行前才显现) | `task_id`, `factor` |
 
-**方案**(不重写 NSGA,只改 evaluation):
+`Event.apply()` 支持带 `expiry` 的扰动,过期自动 revert。
+
+`Workflow.size(i)` 与 `Workflow.sizes` 改成"基础值 + 当前噪声乘子",调度算法用基础值规划,实际执行时用噪声后的值算 ET。
+
+---
+
+### 一.4 真正的服务失效语义
+
+**方案**。
+
+- `service_failure` 恢复为 `available=False`(`events.py:47` 改回)。
+- `reschedule()` 增加"迁移分支":失效节点上的已完成任务的中间结果,在新拓扑中需要重传到 fallback 节点,这部分 OT 计入总 WT(对应 `output_location` 机制)。
+- Benchmark 不再做 fallback 修复(删除 `algorithm2.py:191-197` 的偷偷迁移逻辑),改为输出 **"违反 deadline 任务比例"** 作为评估指标——这样允许 inf 任务存在而不破坏对比,也消除现在 Figure 9 中给基线送的免费红利。
+
+---
+
+## 二、确定性成本模型 vs 随机现实
+
+### 二.5 Scenario-based 鲁棒评估(CVaR)
+
+**方案**(不重写 NSGA-III,只改 evaluation):
 
 ```python
 # src/uarp/scheduler/problem.py
 def _evaluate(self, X, out, *args, **kwargs):
-    S = self.n_scenarios            # 默认 10-20
+    S = self.n_scenarios            # 默认 10–20
     wt_per_x = np.zeros((len(X), S))
     cm_per_x = np.zeros((len(X), S))
     for s in range(S):
@@ -157,128 +111,59 @@ def _evaluate(self, X, out, *args, **kwargs):
             sched = Schedule(np.round(x).astype(int))
             wt_per_x[j, s] = completion_time(self.workflow, topo_s, sched)
             cm_per_x[j, s] = total_energy(self.workflow, topo_s, sched)
-    # 用 CVaR_0.9 作为 robust 目标
     out["F"] = np.stack([cvar(wt_per_x, 0.9), cvar(cm_per_x, 0.9)], axis=1)
 ```
 
-`perturb()` 复用 `events.generate_events` 的样本路径。S 维度可在 `experiments/config.py` 暴露。
+`perturb()` 直接复用 `events.generate_events` 抽样得到的扰动拓扑;S 在 `experiments/config.py` 暴露。
 
-**额外**。`DT = quantile_0.9(WT_scenarios)` 取代 Eq. 13 的 `α·WT_ideal`,消去 α 这一魔术参数。Figure 9 横轴改为"风险偏好分位数"。
+**预期影响**。UARP 从 reactive 升级为真正的 *provisioning*——第一次调度就考虑了不确定性,而非依赖事后 reschedule。
 
 ---
 
-### #9 重写 Eq. 14 任务级 deadline
+### 二.6 分位数 deadline
 
-**问题**。论文 Eq. 14 写的 `(WT(v_q)-ST(v_p))·(WT(v_i)-ST(v_p)) / (WT(v_i)-ST(v_p))` 分子分母同形,ill-posed。复现版只能猜一个解释(见 `cost.py:111-124`)。
+**方案**。
 
-**方案**。改用经典 **Slack-Time Allocation**(Hwang et al. 1989):
+- `cost.deadline(wf, topo, sched, alpha)` 增加重载 `deadline_quantile(wf, scenarios, q)`:
+  ```python
+  DT = np.quantile(WT_scenarios, q)
+  ```
+- `experiments/figure9_success_rate.py` 横轴从 α ∈ [1.1, 1.4] 改为 q ∈ [0.5, 0.99](风险分位数)。
+- α-deadline 接口保留兼容,新接口默认调用。
 
+---
+
+### 二.7 重写 Eq. 14 任务级 deadline
+
+**方案**。改用经典 Slack-Time Allocation:
+
+```python
+def task_deadline_v2(wf, topo, sched, i, critical_path, alpha=1.2):
+    ST, WT = schedule_times(wf, topo, sched)
+    slack = alpha * WT[critical_path[-1]] - (WT[critical_path[-1]] - ST[critical_path[0]])
+    path_len_through_i = path_length_via(wf, i, critical_path)
+    total_path_len = WT[critical_path[-1]] - ST[critical_path[0]]
+    return WT[i] + slack * (path_len_through_i / total_path_len)
 ```
-slack = α · WT_max - WT_critical_path
-DT[i] = WT_ideal[i] + slack · (path_len_through_i / total_path_len)
-```
 
-**代码改动**:`src/uarp/model/cost.py:103-124`。
-**测试**:线性 DAG 上 slack 在各任务间均匀分配。
+**代码改动**。`src/uarp/model/cost.py:103-124` 整段替换;旧公式保留为 `task_deadline_legacy` 供回归对比。
+**测试**。`tests/test_model.py` 增加线性 DAG 上 slack 均匀分配的断言。
 
 ---
 
-## P4:Rolling horizon + 数据迁移 + 链路差异化(3-5 天)
+## 落地时间线
 
-### #10 Rolling-horizon Algorithm 2
-
-**问题**。`reschedule()` 在 `progress_frac=0.4` 处仅触发一次。
-
-**方案**。
-
-- 把 `reschedule()` 改为事件驱动循环:`for ev in events_sorted_by_time: replan(now=ev.time, state=...)`。
-- `state` 维护:已完成任务集合、每节点已缓存的 output 数据、当前 mobility 位置。
-- `replan` 用缩小的 NSGA(`pop_size=30, n_gen=20`),并计入 `replan_latency` 作为新指标——动作生效前旧分配仍在跑,这部分时延要扣到总 WT。
-- 实验:新增 `figure10_rolling.py`,横轴 = 事件率 λ,曲线 = {UARP-once, UARP-RH} 的 success rate / replan_cost。
-
----
-
-### #11 数据再传输代价
-
-**问题**。事件触发后只重排剩余任务的节点;若已完成任务的输出原本落在现失效/降级节点上,后续任务的 OT 应重新评估或加迁移代价。
-
-**方案**。
-
-- `Schedule` 隐式 + 显式维护 `output_location: dict[task_id, node_idx]`。
-- 重调度时:若后继任务的某前驱输出在失效节点,该数据需重传——计入额外 OT,起点是 fallback 节点。
-- 体现在 `cost.transmission_time()` 中:OT(i) 改为对**每个前驱**单独累加(不再只用 i 的 size),反映"取数据"的真实代价。
-
----
-
-### #12 真正的服务失效语义
-
-**问题**。当前用 `capacity *= 0.05`(`src/uarp/uncertainty/events.py:47`)规避 inf。
-
-**方案**。
-
-- `service_failure` 恢复为 `available=False`。
-- Benchmark 改为报告 **"违反 deadline 的任务比例"** 而非 `WT`,从而允许 inf 任务存在而不破坏对比。
-- `reschedule_benchmark` 里的 fallback 修复(`algorithm2.py:191-197`)删除——Benchmark 字面意义就是"不修复",fallback 反而给它送了免费红利,污染 Figure 9。
-
----
-
-### #13 每链路带宽 + 拥塞
-
-**问题**。`Topology.BA` 是全局标量。
-
-**方案**。
-
-- `Topology` 增加 `link_bw: ndarray(N,)`,默认初始化为 `BA`。
-- `schedule_times` 维护 `link_busy[k]`:OT 占用链路 k 期间,其他面向 k 的 OT 必须排队。
-- 这是 fluid 近似——比 packet-level 仿真便宜 2 个数量级,够分辨"热门链路 vs 闲置链路"。
-
----
-
-## P5:能耗 + 多工作流 + 预测(1-2 周,可独立成稿)
-
-### #14 能耗补全
-
-- `EdgeNode.p_idle: float`(W);执行能耗加 `p_idle · (节点 last_busy - first_arrive)`。
-- 新增**设备侧能耗**(终端电池):`device_energy = Σ tx_power · OT(i)`,作为 NSGA 的**第 3 个目标**。
-- 第 3 目标后切回 NSGA-III(见 #2)。
-- 传输能耗从 `size·distance·const` 改为 `size · d^γ · const`(γ ∈ [2,4],path-loss 指数)。
-
----
-
-### #15 多工作流共享 edge
-
-- 新建 `src/uarp/multitenant/`:
-  - `MultiWorkflowSchedule`:扩展 `Schedule`,记录 (workflow_id, task_id) → node_idx。
-  - `schedule_times_mt()`:跨工作流共享 `node_free` 与 `link_busy`(直接复用 #1 和 #13 的实现)。
-- 外层 priority queue 按 deadline 紧迫度调度;内层每个 workflow 调用单 workflow UARP。
-- 新增 `figure11_multitenant.py`:横轴 = 并发工作流数,曲线 = {UARP-MT, 静态 FCFS, EDF} 的成功率。
-
----
-
-### #16 失效率预测器
-
-- 维护历史事件日志 `experiments/results/events_history.jsonl`。
-- 用滑动窗口 MLE 估计每节点失效率 `λ_fail(k)`(或 1 阶 HMM)。
-- NSGA 目标加软惩罚 `Σ_i λ_fail(node_of(i)) · ET(i)`(被高失效率节点占用越久越糟)。
-- 这是 *proactive provisioning* 的最简形式,呼应论文标题里的 "dynamic resource provisioning"。
-
----
-
-## 落地时间线建议
-
-| 阶段 | 内容 | 产出 |
-|---|---|---|
-| P1(0.5d) | #1 + #2 + #3 | 重跑 Figure 6/7/8,数字更可信;README 更新趋势段 |
-| P2(1-2d) | #4 + #5 + #6 | 新 Figure 10:success vs. mobility speed |
-| P3(2-3d) | #7 + #8 + #9 | 替换 α-deadline,Figure 9 改为风险分位数曲线 |
-| P4(3-5d) | #10 + #11 + #12 + #13 | 新 Figure 11:replan_cost vs. event_rate |
-| P5(1-2w) | #14 + #15 + #16 | 论文级扩展(3 目标 + 多工作流 + 预测),可独立投稿 |
+| 阶段 | 内容 | 工作量 | 产出 |
+|---|---|---|---|
+| **P1** | 一.1 移动性 + 一.2 NHPP 事件 + 二.7 Eq.14 重写 | 2–3 天 | 新 Figure 10:`success rate vs. mobility speed` |
+| **P2** | 一.3 新事件类型 + 一.4 真失效语义 | 1–2 天 | Figure 9 重跑,移除基线偷跑红利 |
+| **P3** | 二.5 CVaR 鲁棒评估 + 二.6 分位数 deadline | 2–3 天 | Figure 9 横轴改为风险分位数 |
 
 ---
 
 ## 工作流约定
 
-- 每个 P 阶段独立 PR 合入 `improvements` 分支;P1 全部 merge 后再开 P2 子分支。
+- 每个 P 阶段独立 PR 合入 `improvements` 分支;P1 全部 merge 后再开 P2。
 - 每条改动伴随:**单元测试 + 受影响 figure 重跑 + README 对应段落更新**。
 - 所有新引入的可调参数集中在 `experiments/config.py`,严禁散落。
 - 模型层(`src/uarp/model/`)的语义变化需要在 `notation.md` 同步更新。
