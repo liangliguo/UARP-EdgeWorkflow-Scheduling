@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import time
 
-from . import figure5_utility, figure9_success_rate, figures678_compare
+from . import figure5_utility, figure9_success_rate, figure10_mobility, figures678_compare
 
 
 def main() -> None:
@@ -26,6 +26,11 @@ def main() -> None:
     print("=== Figure 9: success rate ===")
     figure9_success_rate.main()
     print(f"  done in {time.time() - t2:.1f}s")
+
+    t3 = time.time()
+    print("=== Figure 10: success rate vs mobility speed (一.1) ===")
+    figure10_mobility.main()
+    print(f"  done in {time.time() - t3:.1f}s")
 
     print(f"all figures regenerated in {time.time() - t0:.1f}s")
 

@@ -17,8 +17,7 @@ htmlcov/
 
 # Experiment artefacts
 experiments/results/
-figs/*.png
-figs/*.pdf
+# figs/*.png and figs/*.pdf are intentionally committed for reproducibility-snapshot purposes.
 !figs/.gitkeep
 
 # OS

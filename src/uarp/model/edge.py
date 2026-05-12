@@ -21,6 +21,8 @@ class Topology:
 
     The mobile device for a workflow sees `distances[k]` to node k.
     Controllers exchange synchronisation messages described by `h` and `cs`.
+    When ``mobility`` is set (一.1), ``distance_at(t, k)`` returns the
+    time-varying distance instead of the constant ``distances[k]``.
     """
 
     nodes: list[EdgeNode]
@@ -29,6 +31,7 @@ class Topology:
     ct_per_distance: float  # transmission energy per (size · distance)
     h: np.ndarray  # shape (U, U) — controller sync indicator
     cs: np.ndarray  # shape (U, U) — controller sync energy
+    mobility: object | None = None  # MobilityTrace; None = static distances
 
     @property
     def N(self) -> int:
@@ -36,6 +39,13 @@ class Topology:
 
     def node(self, k: int) -> EdgeNode:
         return self.nodes[k]
+
+    def distance_at(self, t: float, k: int) -> float:
+        # Fall back to the static distance for nodes the trace doesn't cover —
+        # e.g. nodes added mid-execution by a ``new_node_join`` event.
+        if self.mobility is None or k >= getattr(self.mobility, "N", 0):
+            return float(self.distances[k])
+        return float(self.mobility.distance_at(t, k))
 
 
 def make_homogeneous_topology(

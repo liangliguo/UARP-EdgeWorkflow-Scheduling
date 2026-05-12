@@ -57,16 +57,20 @@ def _per_task_deadlines(
     alpha: float,
     affected_ids: list[int],
 ) -> np.ndarray:
-    """Per-task deadlines for affected tasks (Eqs. 13-14).
+    """Per-task deadlines for affected tasks — Slack-Time Allocation (二.7).
 
-    The reference schedule should be the *ideal* (uncertainty-free) plan and is
-    shared across all comparison methods so they are evaluated against the
-    same DT — matching paper §2.2.4 where α scales the ideal completion time.
+    The reference schedule is the *ideal* (uncertainty-free) plan, shared
+    across all comparison methods so each method is evaluated against the
+    same DT. Allocates total slack ``(α-1)·WT_max`` proportional to each
+    task's execution duration. See ``cost.task_deadlines_slf``.
+
+    The old paper Eq. 13/14 behaviour ``α · WT_ideal[i]`` is preserved in
+    the baseline_*.csv snapshots (see experiments/results/) for comparison.
     """
-    from uarp.model.cost import schedule_times
+    from uarp.model.cost import task_deadlines_slf
 
-    _, WT_ideal = schedule_times(workflow, topology, reference_schedule)
-    return alpha * WT_ideal[affected_ids]
+    DT_all = task_deadlines_slf(workflow, topology, reference_schedule, alpha)
+    return DT_all[affected_ids]
 
 
 def reschedule(

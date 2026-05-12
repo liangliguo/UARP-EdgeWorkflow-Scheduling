@@ -1,9 +1,14 @@
-"""Figure 9 — success rate vs deadline coefficient α ∈ {1.1, 1.2, 1.3, 1.4}.
+"""Figure 10 — success rate vs device velocity (IMPROVEMENTS.md 一.1).
 
-Success rate (Eq. 16): fraction of affected tasks finishing before their
-per-task deadline. We average over CFG.n_repeats workflows at a fixed scale
-(use the largest scale = 35 to mirror the paper's setup, where success rate
-matters most when there are many tasks and tighter coupling).
+For each velocity v ∈ {0, 1, 2, 4, 8, 16} we build a heterogeneous topology
+with a ``linear_walk`` mobility trace (per-node random direction) and measure
+UARP / FF / WF / Benchmark success rates at α=1.2. ``v=0`` is the static
+baseline; ``v>0`` shows how each method degrades as the device moves.
+
+The point is that UARP only "sees" mobility through ``schedule_times`` —
+no method here is yet *mobility-aware* in the optimiser. Future P4 work
+would feed predicted distances into the NSGA evaluation; this figure is
+the reference curve to beat.
 """
 
 from __future__ import annotations
@@ -28,6 +33,7 @@ from uarp.scheduler import solve as uarp_solve
 from uarp.uncertainty import (
     ff_sub_scheduler,
     generate_events,
+    linear_walk,
     reschedule,
     reschedule_benchmark,
     uarp_sub_scheduler,
@@ -38,7 +44,22 @@ from .config import CFG
 from .figures678_compare import METHODS
 
 
-SCALE_FOR_FIG9 = 25  # one scale, varied α
+SCALE_FOR_FIG10 = 25
+ALPHA_FOR_FIG10 = 1.2
+T_HORIZON = 200.0  # mobility window in time-units (matches max workflow WT)
+VELOCITY_GRID = (0.0, 0.25, 0.5, 1.0, 2.0, 4.0)
+
+
+def _make_topo(seed: int, velocity: float):
+    topo = make_heterogeneous_topology(N=CFG.n_edge_nodes, BA=CFG.BA, seed=seed)
+    if velocity > 0.0:
+        topo.mobility = linear_walk(
+            base_distances=topo.distances,
+            velocity=velocity,
+            T_horizon=T_HORIZON,
+            seed=seed,
+        )
+    return topo
 
 
 def _initial(method: str, wf, topo, seed: int) -> Schedule:
@@ -57,53 +78,42 @@ def _initial(method: str, wf, topo, seed: int) -> Schedule:
     return benchmark_assignment(wf, topo, seed=seed)
 
 
-def _run(method: str, wf, topo, init, events, alpha, seed, dt_ref):
+def _run(method, wf, topo, init, events, alpha, seed, dt_ref):
+    common = dict(
+        alpha=alpha, progress_frac=CFG.progress_frac, deadline_reference=dt_ref,
+    )
     if method == "UARP":
         return reschedule(
             wf, topo, init, events,
             uarp_sub_scheduler(pop_size=CFG.pop_size // 2, n_gen=CFG.n_gen // 2, seed=seed),
-            alpha=alpha, progress_frac=CFG.progress_frac,
-            deadline_reference=dt_ref,
+            **common,
         )
     if method == "FF":
-        return reschedule(
-            wf, topo, init, events, ff_sub_scheduler(),
-            alpha=alpha, progress_frac=CFG.progress_frac,
-            deadline_reference=dt_ref,
-        )
+        return reschedule(wf, topo, init, events, ff_sub_scheduler(), **common)
     if method == "WF":
-        return reschedule(
-            wf, topo, init, events, wf_sub_scheduler(),
-            alpha=alpha, progress_frac=CFG.progress_frac,
-            deadline_reference=dt_ref,
-        )
-    return reschedule_benchmark(
-        wf, topo, init, events,
-        alpha=alpha, progress_frac=CFG.progress_frac,
-        deadline_reference=dt_ref,
-    )
+        return reschedule(wf, topo, init, events, wf_sub_scheduler(), **common)
+    return reschedule_benchmark(wf, topo, init, events, **common)
 
 
 def run() -> pd.DataFrame:
-    rows: list[dict] = []
+    rows = []
     for repeat in range(CFG.n_repeats):
         seed = CFG.seed + repeat
         wf = random_dag(
-            n_tasks=SCALE_FOR_FIG9, edge_prob=CFG.edge_prob,
+            n_tasks=SCALE_FOR_FIG10, edge_prob=CFG.edge_prob,
             size_range=CFG.size_range, seed=seed,
         )
-        topo = make_heterogeneous_topology(N=CFG.n_edge_nodes, BA=CFG.BA, seed=seed)
-        events = generate_events(topo, n_events=CFG.n_uncertainty_events, seed=seed)
-        # shared deadline reference: UARP's ideal (uncertainty-free) schedule
-        dt_ref = _initial("UARP", wf, topo, seed=seed)
-        for method in METHODS:
-            init = _initial(method, wf, topo, seed=seed)
-            for alpha in CFG.alpha_grid:
-                res = _run(method, wf, topo, init, events, alpha, seed, dt_ref)
+        for v in VELOCITY_GRID:
+            topo = _make_topo(seed=seed, velocity=v)
+            events = generate_events(topo, n_events=CFG.n_uncertainty_events, seed=seed)
+            dt_ref = _initial("UARP", wf, topo, seed=seed)
+            for method in METHODS:
+                init = _initial(method, wf, topo, seed=seed)
+                res = _run(method, wf, topo, init, events, ALPHA_FOR_FIG10, seed, dt_ref)
                 suc = success_rate(res.affected_finishes, res.affected_deadlines)
                 rows.append(
                     {
-                        "alpha": alpha,
+                        "velocity": v,
                         "method": method,
                         "repeat": repeat,
                         "success_rate": suc,
@@ -113,8 +123,8 @@ def run() -> pd.DataFrame:
 
 
 def plot(df: pd.DataFrame, out_path: Path) -> None:
-    grouped = df.groupby(["alpha", "method"], as_index=False)["success_rate"].mean()
-    pivot = grouped.pivot(index="alpha", columns="method", values="success_rate")
+    grouped = df.groupby(["velocity", "method"], as_index=False)["success_rate"].mean()
+    pivot = grouped.pivot(index="velocity", columns="method", values="success_rate")
     pivot = pivot[list(METHODS)]
     markers = {"UARP": "D", "FF": "^", "WF": "s", "Benchmark": "o"}
     styles = {"UARP": "-", "FF": "--", "WF": "--", "Benchmark": ":"}
@@ -124,10 +134,10 @@ def plot(df: pd.DataFrame, out_path: Path) -> None:
             pivot.index, pivot[m].values,
             marker=markers[m], linestyle=styles[m], label=m, linewidth=1.6,
         )
-    ax.set_xlabel("Deadline variable α")
-    ax.set_ylabel("Success rate (%)")
+    ax.set_xlabel("Device velocity (distance-units / time-unit)")
+    ax.set_ylabel("Success rate")
     ax.set_ylim(0, 1.05)
-    ax.set_title(f"Figure 9 — Success rate vs α (tasks={SCALE_FOR_FIG9})")
+    ax.set_title(f"Figure 10 — Success rate vs mobility speed (α={ALPHA_FOR_FIG10})")
     ax.grid(True, alpha=0.3)
     ax.legend()
     fig.tight_layout()
@@ -141,11 +151,9 @@ def main() -> None:
     figs_dir = Path(__file__).resolve().parent.parent / "figs"
     figs_dir.mkdir(exist_ok=True)
     df = run()
-    df.to_csv(out_dir / "figure9_success_rate.csv", index=False)
-    plot(df, figs_dir / "figure9_success_rate.png")
-    print(
-        df.groupby(["alpha", "method"])["success_rate"].mean().unstack().to_string()
-    )
+    df.to_csv(out_dir / "figure10_mobility.csv", index=False)
+    plot(df, figs_dir / "figure10_mobility.png")
+    print(df.groupby(["velocity", "method"])["success_rate"].mean().unstack().to_string())
 
 
 if __name__ == "__main__":

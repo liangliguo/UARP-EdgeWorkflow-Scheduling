@@ -3,7 +3,7 @@
 import numpy as np
 
 from uarp.baselines import benchmark_assignment, first_fit_assignment, worst_fit_assignment
-from uarp.model import EdgeNode, Topology, Workflow, completion_time, random_dag
+from uarp.model import EdgeNode, Topology, completion_time, random_dag
 
 
 def _toy_topo(capacities: list[float]) -> Topology:

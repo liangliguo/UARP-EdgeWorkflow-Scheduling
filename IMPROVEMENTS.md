@@ -155,9 +155,22 @@ def task_deadline_v2(wf, topo, sched, i, critical_path, alpha=1.2):
 
 | 阶段 | 内容 | 工作量 | 产出 |
 |---|---|---|---|
-| **P1** | 一.1 移动性 + 一.2 NHPP 事件 + 二.7 Eq.14 重写 | 2–3 天 | 新 Figure 10:`success rate vs. mobility speed` |
+| **P1** ✅ | 一.1 移动性 + 一.2 NHPP 事件 + 二.7 Eq.14 重写 | 2–3 天 | 新 Figure 10:`success rate vs. mobility speed` |
 | **P2** | 一.3 新事件类型 + 一.4 真失效语义 | 1–2 天 | Figure 9 重跑,移除基线偷跑红利 |
 | **P3** | 二.5 CVaR 鲁棒评估 + 二.6 分位数 deadline | 2–3 天 | Figure 9 横轴改为风险分位数 |
+
+### P1 落地记录(本次提交)
+
+- `src/uarp/model/cost.py` — `transmission_time/transmission_energy/schedule_times` 接受 `t_start`,新增 `task_deadlines_slf` 取代 ill-posed Eq.14(旧实现保留为 `task_deadline_legacy`)。
+- `src/uarp/model/edge.py` — `Topology` 加 `mobility` 字段与 `distance_at(t,k)` 方法,新加入节点自动 fallback 到常量距离。
+- `src/uarp/uncertainty/mobility.py`(新) — `MobilityTrace` + `linear_walk` + `random_waypoint`。
+- `src/uarp/uncertainty/events.py` — `Event.time` 字段 + `generate_events_nhpp()`(thinning 采样);`apply_events` 按 `time` 排序后应用。
+- `src/uarp/uncertainty/algorithm2.py` — `_per_task_deadlines` 改用 SLF。
+- `tests/test_model.py` — 新增 3 个测试(SLF total slack / SLF 按 ET 比例 / mobility 拉长 OT),全部 32 个 tests pass。
+- `experiments/figure10_mobility.py`(新) — UARP/FF/WF/Benchmark 在 velocity ∈ {0, 0.25, 0.5, 1, 2, 4} 上的 success rate;`run_all.py` 接入。
+- `experiments/figure_compare.py`(新) — 读 baseline_*.csv + 新 csv 输出 5 张 side-by-side 对比图。
+
+**复跑命令**:`uv run python -m experiments.run_all && uv run python -m experiments.figure_compare`
 
 ---
 

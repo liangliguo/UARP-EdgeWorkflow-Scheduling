@@ -140,3 +140,56 @@ def test_eq16_success_rate():
     dt = np.array([2.0, 1.5, 6.0, 7.0])
     # 1<2 ✓, 2<1.5 ✗, 5<6 ✓, 8<7 ✗ -> 2/4 = 0.5
     assert success_rate(af, dt) == 0.5
+
+
+def test_task_deadlines_slf_allocates_total_slack():
+    """SLF total slack should sum to (α-1)·WT_max·M*ET_mean/ET_total = (α-1)·WT_max."""
+    from uarp.model import task_deadlines_slf
+
+    wf = _serial_workflow([100.0, 100.0, 100.0])
+    topo = _toy_topology(1)
+    sched = Schedule.from_list([0, 0, 0])
+    alpha = 1.2
+    DT = task_deadlines_slf(wf, topo, sched, alpha)
+    _, WT = schedule_times(wf, topo, sched)
+    total_extra = float(np.sum(DT - WT))
+    np.testing.assert_allclose(total_extra, (alpha - 1.0) * float(WT.max()))
+
+
+def test_mobility_lengthens_transmission_when_moving_away():
+    """Device moving away from node should increase OT at later t_start."""
+    from uarp.model import schedule_times
+    from uarp.uncertainty import MobilityTrace
+
+    # Two tasks in series, both on node 0. The mobility trace pushes node 0
+    # twice as far away by t=10.
+    wf = _serial_workflow([100.0, 100.0])
+    topo_static = _toy_topology(1)
+    topo_moving = _toy_topology(1)
+    topo_moving.mobility = MobilityTrace(
+        times=np.array([0.0, 10.0]),
+        distances=np.array([[10.0], [20.0]]),
+    )
+    sched = Schedule.from_list([0, 0])
+    _, WT_static = schedule_times(wf, topo_static, sched)
+    _, WT_moving = schedule_times(wf, topo_moving, sched)
+    # Same first-task timing (t_start ≈ 0 for both).
+    np.testing.assert_allclose(WT_moving[0], WT_static[0])
+    # Second task transmits later — distance is larger ⇒ longer OT ⇒ later WT.
+    assert WT_moving[1] > WT_static[1]
+
+
+def test_task_deadlines_slf_proportional_to_execution_time():
+    """Tasks with longer ET get proportionally more slack."""
+    from uarp.model import task_deadlines_slf
+
+    # Three tasks, only middle one is heavy (size 400 vs 100).
+    wf = _serial_workflow([100.0, 400.0, 100.0])
+    topo = _toy_topology(1)
+    sched = Schedule.from_list([0, 0, 0])
+    DT = task_deadlines_slf(wf, topo, sched, alpha=1.5)
+    _, WT = schedule_times(wf, topo, sched)
+    slack = DT - WT
+    # Middle task's ET = 4·ET of the others -> 4x slack.
+    np.testing.assert_allclose(slack[1] / slack[0], 4.0, rtol=1e-6)
+    np.testing.assert_allclose(slack[1] / slack[2], 4.0, rtol=1e-6)

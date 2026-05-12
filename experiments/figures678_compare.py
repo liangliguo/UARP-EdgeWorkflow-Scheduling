@@ -23,11 +23,9 @@ from uarp.baselines import (
 )
 from uarp.model import (
     Schedule,
-    completion_time,
     execution_energy,
     make_heterogeneous_topology,
     random_dag,
-    total_energy,
 )
 from uarp.scheduler import solve as uarp_solve
 from uarp.uncertainty import (

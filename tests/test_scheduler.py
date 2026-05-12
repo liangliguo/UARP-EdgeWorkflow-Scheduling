@@ -2,7 +2,7 @@
 
 import numpy as np
 
-from uarp.model import Schedule, completion_time, make_homogeneous_topology, random_dag, total_energy
+from uarp.model import completion_time, make_homogeneous_topology, random_dag, total_energy
 from uarp.scheduler import best_index, normalise, saw_cost, solve, utility
 
 

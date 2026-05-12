@@ -12,10 +12,21 @@ from .schedule import Schedule
 from .workflow import Workflow
 
 
-def transmission_time(wf: Workflow, topo: Topology, sched: Schedule, i: int) -> float:
-    """OT(v_{m,i}) = b · d / BA (Eq. 4)."""
+def transmission_time(
+    wf: Workflow,
+    topo: Topology,
+    sched: Schedule,
+    i: int,
+    t_start: float = 0.0,
+) -> float:
+    """OT(v_{m,i}) = b · d(t_start) / BA (Eq. 4 with 一.1 mobility).
+
+    When ``topo.mobility`` is set, distance is evaluated at ``t_start`` — the
+    moment the data starts being transmitted. With no mobility this reduces
+    to the constant-distance formula.
+    """
     k = sched.node_of(i)
-    return wf.size(i) * topo.distances[k] / topo.BA
+    return wf.size(i) * topo.distance_at(t_start, k) / topo.BA
 
 
 def execution_time(wf: Workflow, topo: Topology, sched: Schedule, i: int) -> float:
@@ -44,12 +55,13 @@ def schedule_times(wf: Workflow, topo: Topology, sched: Schedule) -> tuple[np.nd
     WT = np.zeros(M)
     for i in wf.topo_order():
         preds = wf.predecessors(i)
-        ot_i = transmission_time(wf, topo, sched, i)
+        # 一.1: data starts being transmitted once predecessors finish; use
+        # that moment as t_start so a mobility-aware topology samples the
+        # right distance.
+        pred_ready = max((WT[p] for p in preds), default=0.0)
+        ot_i = transmission_time(wf, topo, sched, i, t_start=pred_ready)
         et_i = execution_time(wf, topo, sched, i)
-        if not preds:
-            ST[i] = ot_i
-        else:
-            ST[i] = max(WT[p] + ot_i for p in preds)
+        ST[i] = pred_ready + ot_i if preds else ot_i
         WT[i] = ST[i] + et_i
     return ST, WT
 
@@ -63,12 +75,23 @@ def completion_time(wf: Workflow, topo: Topology, sched: Schedule) -> float:
 def transmission_energy(wf: Workflow, topo: Topology, sched: Schedule) -> float:
     """CMT (Eq. 9) — transmission energy.
 
-    ct(v, z) is modelled as size · distance · ct_per_distance.
+    ct(v, z) is modelled as size · distance · ct_per_distance. With
+    mobility (一.1), distance is evaluated at the task's predecessor-ready
+    time so the cost matches what the schedule actually pays in OT.
     """
+    if topo.mobility is None:
+        e = 0.0
+        for i in range(wf.M):
+            k = sched.node_of(i)
+            e += wf.size(i) * topo.distances[k] * topo.ct_per_distance
+        return e
+    _, WT = schedule_times(wf, topo, sched)
     e = 0.0
     for i in range(wf.M):
         k = sched.node_of(i)
-        e += wf.size(i) * topo.distances[k] * topo.ct_per_distance
+        # OT(i) starts once all predecessors have finished executing.
+        pred_ready = max((float(WT[p]) for p in wf.predecessors(i)), default=0.0)
+        e += wf.size(i) * topo.distance_at(pred_ready, k) * topo.ct_per_distance
     return e
 
 
@@ -100,21 +123,20 @@ def deadline(wf: Workflow, topo: Topology, sched: Schedule, alpha: float) -> flo
     return alpha * completion_time(wf, topo, sched)
 
 
-def task_deadline(
+def task_deadline_legacy(
     wf: Workflow,
     topo: Topology,
     sched: Schedule,
     i: int,
     critical_path: list[int],
 ) -> float:
-    """DT(v_{m,i}) (Eq. 14) — linear interpolation on the critical path.
+    """DT(v_{m,i}) (Eq. 14, paper-as-written) — ill-posed; kept for regression.
 
-    DT(v_i) = (WT(v_q) - ST(v_p)) · (WT(v_i) - ST(v_p)) / (WT(v_i) - ST(v_p))
-    where v_p, v_q are the first/last tasks on the critical path.
-
-    NOTE: as written in the paper Eq. 14 is partially ambiguous; we follow
-    the natural interpretation — proportionally allocate slack across tasks
-    on the critical path.
+    Paper writes:
+      DT(v_i) = (WT(v_q) - ST(v_p)) · (WT(v_i) - ST(v_p)) / (WT(v_i) - ST(v_p))
+    where v_p, v_q are the first/last tasks on the critical path. Numerator
+    and denominator share the (WT(v_i) - ST(v_p)) factor, so the formula
+    collapses. See IMPROVEMENTS.md #二.7 for the diagnosis.
     """
     ST, WT = schedule_times(wf, topo, sched)
     p, q = critical_path[0], critical_path[-1]
@@ -122,6 +144,34 @@ def task_deadline(
     if span <= 0:
         return float(WT[i])
     return float((WT[i] - ST[p]) / span * (WT[q] - ST[p]) + ST[p])
+
+
+# Back-compat alias — historical callers used this name.
+task_deadline = task_deadline_legacy
+
+
+def task_deadlines_slf(
+    wf: Workflow,
+    topo: Topology,
+    sched: Schedule,
+    alpha: float,
+) -> np.ndarray:
+    """Per-task deadlines via Slack-Time Allocation (Hwang et al. 1989).
+
+    Replaces the ill-posed paper Eq. 14. Allocates the total slack
+    ``(α - 1) · WT_max`` across all tasks in proportion to each task's
+    execution duration ``ET[i] = WT[i] - ST[i]``.
+
+    Returns an array of length M with DT[i] = WT_ideal[i] + slack_i.
+    """
+    ST, WT = schedule_times(wf, topo, sched)
+    WT_max = float(WT.max()) if len(WT) else 0.0
+    total_slack = (float(alpha) - 1.0) * WT_max
+    ET = WT - ST
+    et_total = float(ET.sum())
+    if et_total <= 0.0:
+        return WT.copy()
+    return WT + total_slack * (ET / et_total)
 
 
 def success_indicator(actual_finish: float, dt_value: float) -> int:

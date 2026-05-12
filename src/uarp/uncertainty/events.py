@@ -31,6 +31,7 @@ class Event:
     capacity: float = 0.0  # only used by new_node_join
     ce: float = 0.0  # only used by new_node_join
     distance: float = 0.0  # only used by new_node_join
+    time: float = 0.0  # arrival timestamp (used by NHPP scheduling — see 一.2)
 
     def apply(self, topo: Topology) -> Topology:
         """Return a *new* Topology with the event applied (no aliasing).
@@ -92,8 +93,69 @@ def generate_events(
 
 
 def apply_events(topo: Topology, events: list[Event]) -> Topology:
-    """Apply a sequence of events in order, returning the resulting topology."""
+    """Apply a sequence of events in order, returning the resulting topology.
+
+    Events are sorted by ``time`` before being applied so callers can pass an
+    unsorted list. Events with default ``time=0.0`` preserve insertion order
+    (Python's sort is stable) — that matches the pre-一.2 behaviour.
+    """
     out = topo
-    for ev in events:
+    for ev in sorted(events, key=lambda e: e.time):
         out = ev.apply(out)
     return out
+
+
+def generate_events_nhpp(
+    topo: Topology,
+    rate: float,
+    T_horizon: float,
+    *,
+    seed: int = 0,
+    distance_range: tuple[float, float] = (10.0, 100.0),
+    rate_fn=None,
+) -> list[Event]:
+    """Sample an event sequence from a (non)homogeneous Poisson process.
+
+    Implements thinning (Lewis & Shedler 1979): an upper-bound homogeneous
+    Poisson process at intensity ``rate`` produces candidate timestamps,
+    each kept with probability ``rate_fn(t) / rate`` if ``rate_fn`` is given.
+    Returns events sorted by ``time``. Use the simpler ``generate_events``
+    helper if you only need a fixed count.
+    """
+    rng = np.random.default_rng(seed)
+    kinds: list[EventKind] = ["performance_degradation", "service_failure", "new_node_join"]
+    events: list[Event] = []
+    next_join_idx = topo.N
+    t = 0.0
+    while True:
+        # Exp(rate) inter-arrival; rng.exponential takes a scale=1/rate.
+        t += float(rng.exponential(1.0 / rate)) if rate > 0 else float("inf")
+        if t >= T_horizon:
+            break
+        if rate_fn is not None and rng.random() > rate_fn(t) / rate:
+            continue
+        kind = kinds[rng.integers(0, 3)]
+        if kind == "performance_degradation":
+            events.append(
+                Event(
+                    kind=kind,
+                    node_idx=int(rng.integers(0, topo.N)),
+                    factor=float(rng.uniform(0.3, 0.7)),
+                    time=t,
+                )
+            )
+        elif kind == "service_failure":
+            events.append(Event(kind=kind, node_idx=int(rng.integers(0, topo.N)), time=t))
+        else:  # new_node_join
+            events.append(
+                Event(
+                    kind=kind,
+                    node_idx=next_join_idx,
+                    capacity=float(rng.uniform(1500.0, 2500.0)),
+                    ce=0.05,
+                    distance=float(rng.uniform(*distance_range)),
+                    time=t,
+                )
+            )
+            next_join_idx += 1
+    return events
